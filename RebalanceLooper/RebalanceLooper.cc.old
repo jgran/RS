@@ -1,0 +1,524 @@
+// C++
+#include <iostream>
+#include <vector>
+#include <set>
+#include <cmath>
+
+// ROOT
+#include "TDirectory.h"
+#include "TTreeCache.h"
+#include "Math/VectorUtil.h"
+#include "TVector2.h"
+#include "TBenchmark.h"
+#include "TMath.h"
+#include "TMinuit.h"
+#include "TList.h"
+#include "TCollection.h"
+#include "TKey.h"
+
+#include "../Tools/utils.h"
+
+// header
+#include "RebalanceLooper.h"
+
+//MT2
+#include "../MT2CORE/Plotting/PlotUtilities.h"
+
+
+using namespace std;
+
+class mt2tree;
+
+//for rebalance and smear
+std::vector<float> jetpt;
+std::vector<float> jeteta;
+std::vector<float> jetphi;
+//std::vector<TH1F> responseHists;
+//std::vector<std::string> responseHistNames;
+std::map<std::string, std::vector<float> > responseMap;
+//float sigma = 10.0;
+float sigma_soft;
+float pt_soft_x;
+float pt_soft_y;
+
+void setup(){
+  TFile* responseFile = new TFile("/home/users/jgran/QCD_13TeV_madgraph_PHYS14_fineBins_wideRange_eventVeto_newJetID.root", "READ");
+  TIter it(responseFile->GetListOfKeys());
+  TKey* key;
+  std::string keep = "h_tot_JetAll_ResponsePt";
+  while (key = (TKey *)it()) {
+    if (strncmp (key->GetTitle(), keep.c_str(), keep.length()) != 0) continue;
+    std::string hist_name = (key->GetTitle());
+    TH1F* h = (TH1F*) responseFile->Get(TString(hist_name));
+    h->Scale(1.0/h->Integral());
+    std::vector<float> temp_vec;
+    for(int i=1; i<=h->GetNbinsX(); i++){
+      temp_vec.push_back(h->GetBinContent(i));
+    } 
+    responseMap[hist_name] = temp_vec;
+    //responseHistNames.push_back(hist_name);
+    //responseHists.push_back(*h);
+  }
+  responseFile->Close();
+  delete responseFile;
+}
+
+float GetValue(float xvalue, TH1F &hist){
+  float xmax = hist.GetXaxis()->GetXmax()-0.01;
+  int xbin   = hist.GetXaxis()->FindBin(min(xvalue, xmax));
+  return hist.GetBinContent(xbin);
+}
+
+float GetValueUniformBinning(float xvalue, TH1F &hist){
+  float bin_width = hist.GetBinWidth(1);
+  //float bin_width = 0.01;
+  int xbin = xvalue/bin_width;
+  return hist.GetBinContent(xbin);
+}
+
+float GetProb(float pt, float eta, float par){
+
+  std::string pt_string;
+  if(pt < 20.0) pt_string = "Pt0";
+  else if(pt < 30.0)   pt_string = "Pt1";
+  else if(pt < 50.0)   pt_string = "Pt2";
+  else if(pt < 80.0)   pt_string = "Pt3";
+  else if(pt < 120.0)  pt_string = "Pt4";
+  else if(pt < 170.0)  pt_string = "Pt5";
+  else if(pt < 230.0)  pt_string = "Pt6";
+  else if(pt < 300.0)  pt_string = "Pt7";
+  else if(pt < 380.0)  pt_string = "Pt8";
+  else if(pt < 470.0)  pt_string = "Pt9";
+  else if(pt < 570.0)  pt_string = "Pt10";
+  else if(pt < 680.0)  pt_string = "Pt11";
+  else if(pt < 800.0)  pt_string = "Pt12";
+  else if(pt < 1000.0) pt_string = "Pt13";
+  else pt_string = "Pt14";
+
+/*
+  else if(pt < 1300.0) pt_string = "Pt14";
+  else if(pt < 1700.0) pt_string = "Pt15";
+  else if(pt < 2200.0) pt_string = "Pt16";
+  else if(pt < 2800.0) pt_string = "Pt17";
+  else if(pt < 3500.0) pt_string = "Pt18";
+  else if(pt < 4300.0) pt_string = "Pt19";
+  else if(pt < 5200.0) pt_string = "Pt20";
+  else if(pt < 6500.0) pt_string = "Pt21";
+*/
+
+  std::string eta_string;
+  if(eta < 0.3) eta_string = "Eta0";
+  else if(eta < 0.5)   eta_string = "Eta1";
+  else if(eta < 0.8)   eta_string = "Eta2";
+  else if(eta < 1.1)   eta_string = "Eta3";
+  else if(eta < 1.4)  eta_string = "Eta4";
+  else if(eta < 1.7)  eta_string = "Eta5";
+  else if(eta < 2.3)  eta_string = "Eta6";
+  else if(eta < 2.8)  eta_string = "Eta7";
+  else if(eta < 3.2)  eta_string = "Eta8";
+  else if(eta < 4.1)  eta_string = "Eta9";
+  else if(eta < 5.0)  eta_string = "Eta10";
+  //else if(eta < 0.5)  eta_string = "Eta11"; //looks like the binning in the email might not be right
+
+  //std::cout << Form("h_tot_JetAll_ResponsePt_%s_%s", pt_string.c_str(), eta_string.c_str()) << std::endl;
+
+  float bin_width = 0.01;
+  std::string hist_name = "h_tot_JetAll_ResponsePt_" + pt_string + "_" + eta_string;
+  int bin = par/bin_width;
+  return responseMap.at(hist_name).at(bin);
+}
+
+
+TH1F getResponseTemplate(float pt, float eta){
+  TFile* responseFile = new TFile("/home/users/jgran/QCD_13TeV_madgraph_PHYS14_fineBins_wideRange_eventVeto_newJetID.root", "READ");
+
+  std::string pt_string;
+  if(pt < 20.0) pt_string = "Pt0";
+  else if(pt < 30.0)   pt_string = "Pt1";
+  else if(pt < 50.0)   pt_string = "Pt2";
+  else if(pt < 80.0)   pt_string = "Pt3";
+  else if(pt < 120.0)  pt_string = "Pt4";
+  else if(pt < 170.0)  pt_string = "Pt5";
+  else if(pt < 230.0)  pt_string = "Pt6";
+  else if(pt < 300.0)  pt_string = "Pt7";
+  else if(pt < 380.0)  pt_string = "Pt8";
+  else if(pt < 470.0)  pt_string = "Pt9";
+  else if(pt < 570.0)  pt_string = "Pt10";
+  else if(pt < 680.0)  pt_string = "Pt11";
+  else if(pt < 800.0)  pt_string = "Pt12";
+  else if(pt < 1000.0) pt_string = "Pt13";
+  else pt_string = "Pt14";
+
+/*
+  else if(pt < 1300.0) pt_string = "Pt14";
+  else if(pt < 1700.0) pt_string = "Pt15";
+  else if(pt < 2200.0) pt_string = "Pt16";
+  else if(pt < 2800.0) pt_string = "Pt17";
+  else if(pt < 3500.0) pt_string = "Pt18";
+  else if(pt < 4300.0) pt_string = "Pt19";
+  else if(pt < 5200.0) pt_string = "Pt20";
+  else if(pt < 6500.0) pt_string = "Pt21";
+*/
+
+  std::string eta_string;
+  if(eta < 0.3) eta_string = "Eta0";
+  else if(eta < 0.5)   eta_string = "Eta1";
+  else if(eta < 0.8)   eta_string = "Eta2";
+  else if(eta < 1.1)   eta_string = "Eta3";
+  else if(eta < 1.4)  eta_string = "Eta4";
+  else if(eta < 1.7)  eta_string = "Eta5";
+  else if(eta < 2.3)  eta_string = "Eta6";
+  else if(eta < 2.8)  eta_string = "Eta7";
+  else if(eta < 3.2)  eta_string = "Eta8";
+  else if(eta < 4.1)  eta_string = "Eta9";
+  else if(eta < 5.0)  eta_string = "Eta10";
+  //else if(eta < 0.5)  eta_string = "Eta11"; //looks like the binning in the email might not be right
+
+  //std::cout << Form("h_tot_JetAll_ResponsePt_%s_%s", pt_string.c_str(), eta_string.c_str()) << std::endl;
+
+  TH1F* response_ptr = (TH1F*)responseFile->Get(Form("h_tot_JetAll_ResponsePt_%s_%s", pt_string.c_str(), eta_string.c_str()));
+  if(! response_ptr) {std::cout << "Bad pointer to response histogram." << std::endl;}
+  TH1F response = *response_ptr; 
+
+  //responseFile->Close();
+  //delete responseFile;
+
+  return response;
+}
+
+void minuitFunction(int& nDim, double* gout, double& result, double par[], int flg) {
+  float likelihood = 0;
+  float pt_constrained_x = 0.0;
+  float pt_constrained_y = 0.0;
+  for(int i=0; i<nDim; i++){
+    //std::cout << "\t\t par " << i << " = " << par[i] << ", prob = " << max(GetValueUniformBinning(par[i], h), min_prob) << std::endl;
+    //std::cout << "par " << i << " = " << par[i] << std::endl;
+    //std::cout << "jet pt = " << jetpt.at(i) << std::endl;
+    //std::cout << "jet eta = " << jeteta.at(i) << std::endl;
+    //TH1F h = getResponseTemplate(jetpt.at(i)/par[i], fabs(jeteta.at(i)));
+    //h.Scale(1.0/h.Integral());
+    float prob = GetProb(jetpt.at(i)/par[i], fabs(jeteta.at(i)), par[i]);
+    float min_prob = 0.00001;
+    prob = max(prob, min_prob);
+    //likelihood += log(max(GetValueUniformBinning(par[i], h), min_prob));
+    likelihood += log(prob);
+    pt_constrained_x -= (jetpt.at(i))*cos(jetphi.at(i))/par[i];
+    pt_constrained_y -= (jetpt.at(i))*sin(jetphi.at(i))/par[i];
+  }
+  float x1 = (pt_soft_x - pt_constrained_x)/sigma_soft;
+  float x2 = (pt_soft_y - pt_constrained_y)/sigma_soft;
+  likelihood += -x1*x1/2;
+  likelihood += -x2*x2/2;
+  //std::cout << "pt_soft_x = " << pt_soft_x << std::endl;
+  //std::cout << "pt_soft_y = " << pt_soft_y << std::endl;
+  //std::cout << "sigma_soft = " << sigma_soft << std::endl;
+  //std::cout << "x1 = " << x1 << std::endl;
+  //std::cout << "x2 = " << x2 << std::endl;
+  //std::cout << "-log likelihood = " << -likelihood << std::endl;
+  //std::cout << std::endl;
+
+  result = -likelihood;
+}
+
+/*
+void minuitFunction(int& nDim, double* gout, double& result, double par[], int flg) {
+  float likelihood = 1;
+  float pt_constrained_x = 0.0;
+  float pt_constrained_y = 0.0;
+  for(int i=0; i<nDim; i++){
+    TH1F h = responseHists.at(i);
+    h.Scale(1.0/h.Integral());
+    float min_prob = 0.001;
+    //std::cout << "par = " << par[i] << ", Prob = " << max(GetValue(par[i], h), min_prob) << std::endl;
+    likelihood *= max(GetValue(par[i], h), min_prob);
+    pt_constrained_x -= par[i]*(jetpt.at(i))*cos(jetphi.at(i));
+    pt_constrained_y -= par[i]*(jetpt.at(i))*sin(jetphi.at(i));
+  }
+  float x1 = (pt_soft_x - pt_constrained_x)/sigma_soft;
+  float x2 = (pt_soft_y - pt_constrained_y)/sigma_soft;
+  likelihood *= exp(-x1*x1/2)/sqrt(2*3.14159);
+  likelihood *= exp(-x2*x2/2)/sqrt(2*3.14159);
+
+  result = -log(likelihood);
+}
+*/
+
+/*
+//this one uses chi2 with fixed sigmas
+void minuitFunction(int& nDim, double* gout, double& result, double par[], int flg) {
+float chi2 = 0;
+float pt_constrained_x = 0.0;
+float pt_constrained_y = 0.0;
+for(int i=0; i<nDim; i++){
+chi2 += ((jetpt.at(i) - jetpt.at(i)*par[i])/sigma)*((jetpt.at(i) - jetpt.at(i)*par[i])/sigma);
+pt_constrained_x -= par[i]*(jetpt.at(i))*cos(jetphi.at(i));
+pt_constrained_y -= par[i]*(jetpt.at(i))*sin(jetphi.at(i));
+}
+chi2 += ((pt_soft_x - pt_constrained_x)/sigma_soft)*((pt_soft_x - pt_constrained_x)/sigma_soft);
+chi2 += ((pt_soft_y - pt_constrained_y)/sigma_soft)*((pt_soft_y - pt_constrained_y)/sigma_soft);
+
+result = chi2;
+}
+*/
+
+
+RebalanceLooper::RebalanceLooper(){
+}
+RebalanceLooper::~RebalanceLooper(){
+
+};
+
+
+void RebalanceLooper::loop(TChain* chain, std::string output_name){
+
+  setup();
+
+  // Benchmark
+  TBenchmark *bmark = new TBenchmark();
+  bmark->Start("benchmark");
+
+  MakeNtuple( Form("%s", output_name.c_str()) );
+
+  // File Loop
+  int nDuplicates = 0;
+  int nEvents = chain->GetEntries();
+  unsigned int nEventsChain = nEvents;
+  cout << "[RebalanceLooper::loop] running on " << nEventsChain << " events" << endl;
+  unsigned int nEventsTotal = 0;
+  TObjArray *listOfFiles = chain->GetListOfFiles();
+  TIter fileIter(listOfFiles);
+  TFile *currentFile = 0;
+  while ( (currentFile = (TFile*)fileIter.Next()) ) {
+    cout << "[RebalanceLooper::loop] running on file: " << currentFile->GetTitle() << endl;
+
+    // Get File Content
+    TFile f( currentFile->GetTitle() );
+    TTree *tree = (TTree*)f.Get("mt2");
+    TTreeCache::SetLearnEntries(10);
+    tree->SetCacheSize(128*1024*1024);
+    //mt2tree t(tree);
+
+    // Use this to speed things up when not looking at genParticles
+    //tree->SetBranchStatus("genPart_*", 0); 
+
+    t.Init(tree);
+
+    // Event Loop
+    unsigned int nEventsTree = tree->GetEntriesFast();
+    //for( unsigned int event = 0; event < nEventsTree; ++event) {
+    for( unsigned int event = 0; event < 10; ++event) {
+
+      t.GetEntry(event);
+
+      //---------------------
+      // bookkeeping and progress report
+      //---------------------
+      ++nEventsTotal;
+      if (nEventsTotal%10000==0) {
+        ULong64_t i_permille = (int)floor(1000 * nEventsTotal / float(nEventsChain));
+        if (isatty(1)) {
+          printf("\015\033[32m ---> \033[1m\033[31m%4.1f%%"
+              "\033[0m\033[32m <---\033[0m\015", i_permille/10.);
+          fflush(stdout);
+        }
+        else {
+          cout<<i_permille/10.<<" ";
+          if (nEventsTotal%100000==0) cout<<endl;
+        }
+      }
+
+      InitNtuple();
+
+      //---------------------
+      // skip duplicates -- will need this eventually
+      //---------------------
+      //if( isData ) {
+      //  DorkyEventIdentifier id = {stopt.run(), stopt.event(), stopt.lumi() };
+      //  if (is_duplicate(id, already_seen) ){
+      //    continue;
+      //  }
+      //}
+      //
+
+
+      ///////////////////// rebalance and smear /////////////////////
+
+      jetpt.clear();
+      jeteta.clear();
+      jetphi.clear();
+      //responseHists.clear();
+
+      float met_x = (t.met_pt)*cos(t.met_phi);
+      float met_y = (t.met_pt)*sin(t.met_phi);
+
+      float jet_x = 0;
+      float jet_y = 0;
+      for(int i=0; i<t.njet; i++){
+        if(t.jet_pt[i] < 40.0) continue;
+        if(fabs(t.jet_eta[i]) > 2.5) continue;
+        jet_x += (t.jet_pt[i])*cos(t.jet_phi[i]);
+        jet_y += (t.jet_pt[i])*sin(t.jet_phi[i]);
+        jetpt.push_back(t.jet_pt[i]);
+        jeteta.push_back(t.jet_eta[i]);
+        jetphi.push_back(t.jet_phi[i]);
+      }
+
+      pt_soft_x = -met_x - jet_x;
+      pt_soft_y = -met_y - jet_y;
+      float pt_soft = sqrt(pt_soft_x*pt_soft_x + pt_soft_y*pt_soft_y);
+      sigma_soft = 0.2*pt_soft;
+
+      
+      //TMinuit* minimizer = new TMinuit(t.njet);
+      TMinuit* minimizer = new TMinuit(t.nJet40);
+      //TMinuit* minimizer = new TMinuit(1);
+      minimizer->SetFCN(minuitFunction);
+      int iflag = 0;
+      //Double_t arglist[t.njet];
+      Double_t arglist[t.nJet40];
+
+      for(int i=0; i<t.nJet40; i++){
+        std::string name = Form("c%d", i);
+        //minimizer->mnparm(i,"c",1,0.01,0,2, iflag);
+        minimizer->mnparm(i,name,1,0.1,0,10, iflag);
+        std::cout << "iflag = " << iflag << std::endl;
+        arglist[i] = 0.5;
+      }
+
+      //int iflag = 0;
+      //Double_t arglist[1];
+      //arglist[0] = 10;
+      //minimizer->mnexcm("SET ERR", arglist, t.nJet40, iflag);
+      //minimizer->mnparm(0,"c",8,0.1,5,20,iflag);
+      //minimizer->mnexcm("CALL FCN", arglist, 1, iflag);
+
+      arglist[0] = 3;
+      minimizer->mnexcm("SET PRI", arglist, 1, iflag);
+      std::cout << "iflag = " << iflag << std::endl;
+
+      for(int i=0; i<t.nJet40; i++){
+        arglist[i] = 1.0;
+      }
+
+      //minimizer->mnexcm("SIMPLEX", arglist, 0, iflag);
+      minimizer->mnexcm("MIGRAD", arglist, 0, iflag);
+      //double par_value;
+      //double par_error;
+      std::cout << "iflag = " << iflag << std::endl;
+
+         std::cout << std::endl;
+         std::cout << "iflag = " << iflag << std::endl;
+         std::cout << "\t jet_x = " << jet_x << std::endl;
+         std::cout << "\t jet_y = " << jet_y << std::endl;
+         std::cout << "\t met_x = " << t.met_pt*cos(t.met_phi) << std::endl;
+         std::cout << "\t met_y = " << t.met_pt*sin(t.met_phi) << std::endl;
+         std::cout << "\t mht_x = " << t.mht_pt*cos(t.mht_phi) << std::endl;
+         std::cout << "\t mht_y = " << t.mht_pt*sin(t.mht_phi) << std::endl;
+         std::cout << "\t pt_soft_x = " << pt_soft_x << std::endl;
+         std::cout << "\t pt_soft_y = " << pt_soft_y << std::endl;
+
+         std::cout << "\t met_pt = " << t.met_pt << std::endl;
+         std::cout << "\t mht_pt = " << t.mht_pt << std::endl;
+         //std::cout << "\t pt_soft = " << pt_soft << std::endl;
+
+      /*
+         for(int i=0; i<t.nJet40; i++){
+         std::cout << "\t jet" << i << ":  pt = " << jetpt.at(i) << ", phi = " << jetphi.at(i) << std::endl;
+         }
+         */
+
+std::cout << std::endl;
+      for(int i=0; i<t.nJet40; i++){
+        double par_value;
+        double par_error;
+        minimizer->GetParameter(i, par_value, par_error);
+        std::cout << "\t The value of the parameter is " << par_value << "+/- " << par_error << std::endl;
+        jetpt.at(i) *= par_value;
+        rebalanceFactors.push_back(par_value); 
+      }
+      jet_x = 0;
+      jet_y = 0;
+      //std::cout << "\t Corrected:" << std::endl;
+      for(int i=0; i<t.nJet40; i++){
+        jet_x += (jetpt.at(i))*cos(jetphi.at(i));
+        jet_y += (jetpt.at(i))*sin(jetphi.at(i));
+        //std::cout << "\t jet" << i << ":  pt = " << jetpt.at(i) << ", phi = " << jetphi.at(i) << std::endl;
+      }
+      //std::cout << "\t new jet_x = " << jet_x << std::endl;
+      //std::cout << "\t new jet_y = " << jet_y << std::endl;
+      float new_met_x = -pt_soft_x - jet_x;
+      float new_met_y = -pt_soft_y - jet_y;
+      float new_met = sqrt(new_met_x*new_met_x + new_met_y*new_met_y);
+
+/*
+      plot1D("h_metx",       met_x,       evtweight_, h_1d_global, "; metx)", 40, -100, 100);
+      plot1D("h_mety",       met_y,       evtweight_, h_1d_global, "; mety)", 40, -100, 100);
+      plot1D("h_met" ,       t.met_pt,   evtweight_, h_1d_global, "; mety)", 40, 0, 100);
+      plot1D("h_ptsoftx_plus_jetx",       pt_soft_x + jet_x,       evtweight_, h_1d_global, "; balance in x)", 40, -100, 100);
+      plot1D("h_ptsofty_plus_jety",       pt_soft_y + jet_y,       evtweight_, h_1d_global, "; balance in y)", 40, -100, 100);
+      plot1D("h_rebalanced_metx",         new_met_x,      evtweight_, h_1d_global, "; rebalanced metx)", 40, -100, 100);
+      plot1D("h_rebalanced_mety",         new_met_y,      evtweight_, h_1d_global, "; rebalanced mety)", 40, -100, 100);
+      plot1D("h_rebalanced_met" ,         new_met,        evtweight_, h_1d_global, "; rebalanced met)", 40, 0, 100);
+*/
+      /////////////////////        end          /////////////////////
+     
+      FillNtuple();
+
+    }//end loop on events in a file
+
+    delete tree;
+    f.Close();
+    }//end loop on files
+
+    cout << "[RebalanceLooper::loop] processed " << nEventsTotal << " events" << endl;
+    if ( nEventsChain != nEventsTotal ) {
+      std::cout << "ERROR: number of events from files is not equal to total number of events" << std::endl;
+    }
+
+    cout << nDuplicates << " duplicate events were skipped." << endl;
+
+    CloseNtuple();
+
+    bmark->Stop("benchmark");
+    cout << endl;
+    cout << nEventsTotal << " Events Processed" << endl;
+    cout << "------------------------------" << endl;
+    cout << "CPU  Time:	" << Form( "%.01f s", bmark->GetCpuTime("benchmark")  ) << endl;
+    cout << "Real Time:	" << Form( "%.01f s", bmark->GetRealTime("benchmark") ) << endl;
+    cout << endl;
+    delete bmark;
+
+    return;
+}
+
+
+void RebalanceLooper::MakeNtuple(const char *Filename){
+  TDirectory *rootdir = gDirectory->GetDirectory("Rint:");
+  rootdir->cd();
+  outfile_ = new TFile(Form("%s", Filename), "RECREATE");
+  outfile_->cd();
+  outTree_ = new TTree("rebalance", "rebalance");
+
+  outTree_->Branch("rebalanceFactors", &rebalanceFactors );
+
+  return;
+}
+
+
+void RebalanceLooper::InitNtuple () {
+  rebalanceFactors.clear();
+  return;
+}
+
+
+void RebalanceLooper::FillNtuple(){
+  outTree_->Fill();
+  return;
+}
+
+void RebalanceLooper::CloseNtuple(){
+  outfile_->cd();
+  outTree_->Write();
+  outfile_->Close();
+  return;
+}
