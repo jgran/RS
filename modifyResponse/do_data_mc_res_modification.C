@@ -18,38 +18,12 @@ double ComputeGaussianValue(double scale, double mean, double sigma, float x){
   return scale*TMath::Exp(-0.5*((x - mean)/sigma)*((x - mean)/sigma));
 }
 
-void do_modification(){
+void do_data_mc_res_modification(){
 
   //core + 10%
-  //float core_mod = 1.10;
-  //float tail_mod = 1.0;
-  //std::string plotdir = "core_plus_10percent";
-
-  //core - 10%
-  //float core_mod = 0.90;
-  //float tail_mod = 1.0;
-  //std::string plotdir = "core_minus_10percent";
-
-  //core + 25%
-  //float core_mod = 1.25;
-  //float tail_mod = 1.0;
-  //std::string plotdir = "core_plus_25percent";
-
-  //core - 25%
-  //float core_mod = 0.75;
-  //float tail_mod = 1.0;
-  //std::string plotdir = "core_minus_25percent";
-
-  //tail + 50%
-  //float core_mod = 1.0;
-  //float tail_mod = 1.5;
-  //std::string plotdir = "tail_plus_50percent";
-  
-  //tail + 100%
   float core_mod = 1.0;
-  float tail_mod = 2.0;;
-  std::string plotdir = "tail_plus_100percent";
-
+  float tail_mod = 1.0;
+  std::string plotdir = "core_data_mc_corr";
 
   TFile* outfile_fits = new TFile(Form("template_fits_%s.root", plotdir.c_str()), "RECREATE");
   TFile* outfile_templates = new TFile(Form("templates_%s.root", plotdir.c_str()), "RECREATE");
@@ -67,6 +41,17 @@ void do_modification(){
     if(h->GetEntries() < 100) continue;
     h->Scale(1.0/h->Integral());
 
+    if(TString(hist_name).Contains("Eta10")) core_mod = 1.288;
+    else if(TString(hist_name).Contains("Eta11")) core_mod = 1.288;
+    else if(TString(hist_name).Contains("Eta0")) core_mod = 1.052;
+    else if(TString(hist_name).Contains("Eta1")) core_mod = 1.052;
+    else if(TString(hist_name).Contains("Eta2")) core_mod = 1.057;
+    else if(TString(hist_name).Contains("Eta3")) core_mod = 1.057;
+    else if(TString(hist_name).Contains("Eta4")) core_mod = 1.096;
+    else if(TString(hist_name).Contains("Eta5")) core_mod = 1.096;
+    else if(TString(hist_name).Contains("Eta6")) core_mod = 1.134;
+    else core_mod = 1.288;
+
     TH1F* h_tail = (TH1F*) h->Clone();
     TH1F* h_core = (TH1F*) h->Clone();
     TH1F* h_new_core = (TH1F*) h->Clone();
@@ -82,6 +67,7 @@ void do_modification(){
     fit->SetParLimits(1, mean - 0.02, mean + 0.02);
     float side = h->GetRMS();
     if(side > 0.1) side *= 0.5;
+    if(TString(hist_name).Contains("Eta0")) side = 0.25*h->GetRMS();
     fit->SetRange(mean - side, mean + side);
     h->Fit(Form("fit_%s", hist_name.c_str()), "R");
     fit->SetRange(0, 3);
@@ -97,7 +83,8 @@ void do_modification(){
     for(int i=1; i<=h->GetNbinsX(); i++){
         float gaussian_contribution = ComputeGaussianValue(g_scale, g_mean, g_sigma, h->GetBinCenter(i));
         float tail_contribution = h->GetBinContent(i) - gaussian_contribution;
-        h_tail->SetBinContent(i, std::max(tail_contribution, 0)); 
+        //h_tail->SetBinContent(i, std::max(tail_contribution, 0)); 
+        h_tail->SetBinContent(i, tail_contribution);
         h_core->SetBinContent(i, gaussian_contribution); 
     }
     h->Draw();
